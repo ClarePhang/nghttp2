@@ -26,23 +26,23 @@
 
 #include <sys/stat.h>
 #ifdef HAVE_SYS_SOCKET_H
-#include <sys/socket.h>
+#  include <sys/socket.h>
 #endif // HAVE_SYS_SOCKET_H
 #ifdef HAVE_NETDB_H
-#include <netdb.h>
+#  include <netdb.h>
 #endif // HAVE_NETDB_H
 #ifdef HAVE_UNISTD_H
-#include <unistd.h>
+#  include <unistd.h>
 #endif // HAVE_UNISTD_H
 #ifdef HAVE_FCNTL_H
-#include <fcntl.h>
+#  include <fcntl.h>
 #endif // HAVE_FCNTL_H
 #ifdef HAVE_NETINET_IN_H
-#include <netinet/in.h>
+#  include <netinet/in.h>
 #endif // HAVE_NETINET_IN_H
 #include <netinet/tcp.h>
 #ifdef HAVE_ARPA_INET_H
-#include <arpa/inet.h>
+#  include <arpa/inet.h>
 #endif // HAVE_ARPA_INET_H
 
 #include <cassert>
@@ -64,7 +64,7 @@
 #include "template.h"
 
 #ifndef O_BINARY
-#define O_BINARY (0)
+#  define O_BINARY (0)
 #endif // O_BINARY
 
 namespace nghttp2 {
@@ -305,7 +305,7 @@ public:
       }
     }
     auto handler =
-        make_unique<Http2Handler>(this, fd, ssl, get_next_session_id());
+        std::make_unique<Http2Handler>(this, fd, ssl, get_next_session_id());
     if (!ssl) {
       if (handler->connection_made() != 0) {
         return;
@@ -358,11 +358,11 @@ public:
   }
   FileEntry *cache_fd(const std::string &path, const FileEntry &ent) {
 #ifdef HAVE_STD_MAP_EMPLACE
-    auto rv = fd_cache_.emplace(path, make_unique<FileEntry>(ent));
+    auto rv = fd_cache_.emplace(path, std::make_unique<FileEntry>(ent));
 #else  // !HAVE_STD_MAP_EMPLACE
     // for gcc-4.7
-    auto rv =
-        fd_cache_.insert(std::make_pair(path, make_unique<FileEntry>(ent)));
+    auto rv = fd_cache_.insert(
+        std::make_pair(path, std::make_unique<FileEntry>(ent)));
 #endif // !HAVE_STD_MAP_EMPLACE
     auto &res = (*rv).second;
     res->it = rv;
@@ -888,7 +888,9 @@ int Http2Handler::verify_npn_result() {
   const unsigned char *next_proto = nullptr;
   unsigned int next_proto_len;
   // Check the negotiated protocol in NPN or ALPN
+#ifndef OPENSSL_NO_NEXTPROTONEG
   SSL_get0_next_proto_negotiated(ssl_, &next_proto, &next_proto_len);
+#endif // !OPENSSL_NO_NEXTPROTONEG
   for (int i = 0; i < 2; ++i) {
     if (next_proto) {
       auto proto = StringRef{next_proto, next_proto_len};
@@ -1021,7 +1023,7 @@ int Http2Handler::submit_push_promise(Stream *stream,
     return promised_stream_id;
   }
 
-  auto promised_stream = make_unique<Stream>(this, promised_stream_id);
+  auto promised_stream = std::make_unique<Stream>(this, promised_stream_id);
 
   auto &promised_header = promised_stream->header;
   promised_header.method = StringRef::from_lit("GET");
@@ -1475,7 +1477,7 @@ int on_begin_headers_callback(nghttp2_session *session,
     return 0;
   }
 
-  auto stream = make_unique<Stream>(hd, frame->hd.stream_id);
+  auto stream = std::make_unique<Stream>(hd, frame->hd.stream_id);
 
   add_stream_read_timeout(stream.get());
 
@@ -1830,10 +1832,10 @@ public:
       if (config_->verbose) {
         std::cerr << "spawning thread #" << i << std::endl;
       }
-      auto worker = make_unique<Worker>();
+      auto worker = std::make_unique<Worker>();
       auto loop = ev_loop_new(get_ev_loop_flags());
-      worker->sessions =
-          make_unique<Sessions>(sv, loop, config_, sessions_->get_ssl_ctx());
+      worker->sessions = std::make_unique<Sessions>(sv, loop, config_,
+                                                    sessions_->get_ssl_ctx());
       ev_async_init(&worker->w, worker_acceptcb);
       worker->w.data = worker.get();
       ev_async_start(loop, &worker->w);
@@ -1982,6 +1984,7 @@ HttpServer::HttpServer(const Config *config) : config_(config) {
   };
 }
 
+#ifndef OPENSSL_NO_NEXTPROTONEG
 namespace {
 int next_proto_cb(SSL *s, const unsigned char **data, unsigned int *len,
                   void *arg) {
@@ -1991,6 +1994,7 @@ int next_proto_cb(SSL *s, const unsigned char **data, unsigned int *len,
   return SSL_TLSEXT_ERR_OK;
 }
 } // namespace
+#endif // !OPENSSL_NO_NEXTPROTONEG
 
 namespace {
 int verify_callback(int preverify_ok, X509_STORE_CTX *ctx) {
@@ -2205,7 +2209,9 @@ int HttpServer::run() {
 
     next_proto = util::get_default_alpn();
 
+#ifndef OPENSSL_NO_NEXTPROTONEG
     SSL_CTX_set_next_protos_advertised_cb(ssl_ctx, next_proto_cb, &next_proto);
+#endif // !OPENSSL_NO_NEXTPROTONEG
 #if OPENSSL_VERSION_NUMBER >= 0x10002000L
     // ALPN selection callback
     SSL_CTX_set_alpn_select_cb(ssl_ctx, alpn_select_proto_cb, this);

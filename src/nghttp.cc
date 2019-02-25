@@ -26,13 +26,13 @@
 
 #include <sys/stat.h>
 #ifdef HAVE_UNISTD_H
-#include <unistd.h>
+#  include <unistd.h>
 #endif // HAVE_UNISTD_H
 #ifdef HAVE_FCNTL_H
-#include <fcntl.h>
+#  include <fcntl.h>
 #endif // HAVE_FCNTL_H
 #ifdef HAVE_NETINET_IN_H
-#include <netinet/in.h>
+#  include <netinet/in.h>
 #endif // HAVE_NETINET_IN_H
 #include <netinet/tcp.h>
 #include <getopt.h>
@@ -50,7 +50,7 @@
 #include <openssl/err.h>
 
 #ifdef HAVE_JANSSON
-#include <jansson.h>
+#  include <jansson.h>
 #endif // HAVE_JANSSON
 
 #include "app_helper.h"
@@ -59,9 +59,10 @@
 #include "base64.h"
 #include "tls.h"
 #include "template.h"
+#include "ssl_compat.h"
 
 #ifndef O_BINARY
-#define O_BINARY (0)
+#  define O_BINARY (0)
 #endif // O_BINARY
 
 namespace nghttp2 {
@@ -126,6 +127,7 @@ Config::Config()
   nghttp2_option_set_peer_max_concurrent_streams(http2_option,
                                                  peer_max_concurrent_streams);
   nghttp2_option_set_builtin_recv_extension_type(http2_option, NGHTTP2_ALTSVC);
+  nghttp2_option_set_builtin_recv_extension_type(http2_option, NGHTTP2_ORIGIN);
 }
 
 Config::~Config() { nghttp2_option_del(http2_option); }
@@ -231,7 +233,7 @@ void Request::init_html_parser() {
     base_uri += util::get_uri_field(uri.c_str(), u, UF_QUERY);
   }
 
-  html_parser = make_unique<HtmlParser>(base_uri);
+  html_parser = std::make_unique<HtmlParser>(base_uri);
 }
 
 int Request::update_html_parser(const uint8_t *data, size_t len, int fin) {
@@ -525,7 +527,7 @@ int submit_request(HttpClient *client, const Headers &headers, Request *req) {
   req->req_nva = std::move(build_headers);
 
   if (expect_continue) {
-    auto timer = make_unique<ContinueTimer>(client->loop, req);
+    auto timer = std::make_unique<ContinueTimer>(client->loop, req);
     req->continue_timer = std::move(timer);
   }
 
@@ -680,15 +682,16 @@ int HttpClient::initiate_connection() {
       const auto &host_string =
           config.host_override.empty() ? host : config.host_override;
 
-#if (!defined(LIBRESSL_VERSION_NUMBER) &&                                      \
-     OPENSSL_VERSION_NUMBER >= 0x10002000L) ||                                 \
+#if LIBRESSL_2_7_API ||                                                        \
+    (!LIBRESSL_IN_USE && OPENSSL_VERSION_NUMBER >= 0x10002000L) ||             \
     defined(OPENSSL_IS_BORINGSSL)
       auto param = SSL_get0_param(ssl);
       X509_VERIFY_PARAM_set_hostflags(param, 0);
       X509_VERIFY_PARAM_set1_host(param, host_string.c_str(),
                                   host_string.size());
-#endif // (!defined(LIBRESSL_VERSION_NUMBER) && OPENSSL_VERSION_NUMBER >=
-       // 0x10002000L) || defined(OPENSSL_IS_BORINGSSL)
+#endif // LIBRESSL_2_7_API || (!LIBRESSL_IN_USE &&
+       // OPENSSL_VERSION_NUMBER >= 0x10002000L) ||
+       // defined(OPENSSL_IS_BORINGSSL)
       SSL_set_verify(ssl, SSL_VERIFY_PEER, verify_cb);
 
       if (!util::numeric_host(host_string.c_str())) {
@@ -882,7 +885,7 @@ int HttpClient::connected() {
   writefn = &HttpClient::write_clear;
 
   if (need_upgrade()) {
-    htp = make_unique<http_parser>();
+    htp = std::make_unique<http_parser>();
     http_parser_init(htp.get(), HTTP_RESPONSE);
     htp->data = this;
 
@@ -1095,7 +1098,9 @@ int HttpClient::connection_made() {
     // Check NPN or ALPN result
     const unsigned char *next_proto = nullptr;
     unsigned int next_proto_len;
+#ifndef OPENSSL_NO_NEXTPROTONEG
     SSL_get0_next_proto_negotiated(ssl, &next_proto, &next_proto_len);
+#endif // !OPENSSL_NO_NEXTPROTONEG
     for (int i = 0; i < 2; ++i) {
       if (next_proto) {
         auto proto = StringRef{next_proto, next_proto_len};
@@ -1448,8 +1453,8 @@ bool HttpClient::add_request(const std::string &uri,
     path_cache.insert(uri);
   }
 
-  reqvec.push_back(
-      make_unique<Request>(uri, u, data_prd, data_length, pri_spec, level));
+  reqvec.push_back(std::make_unique<Request>(uri, u, data_prd, data_length,
+                                             pri_spec, level));
   return true;
 }
 
@@ -1849,7 +1854,7 @@ int on_begin_headers_callback(nghttp2_session *session,
 
     nghttp2_priority_spec_default_init(&pri_spec);
 
-    auto req = make_unique<Request>("", u, nullptr, 0, pri_spec);
+    auto req = std::make_unique<Request>("", u, nullptr, 0, pri_spec);
     req->stream_id = stream_id;
 
     nghttp2_session_set_stream_user_data(session, stream_id, req.get());
@@ -2220,6 +2225,7 @@ id  responseEnd requestStart  process code size request path)"
 }
 } // namespace
 
+#ifndef OPENSSL_NO_NEXTPROTONEG
 namespace {
 int client_select_next_proto_cb(SSL *ssl, unsigned char **out,
                                 unsigned char *outlen, const unsigned char *in,
@@ -2243,6 +2249,7 @@ int client_select_next_proto_cb(SSL *ssl, unsigned char **out,
   return SSL_TLSEXT_ERR_OK;
 }
 } // namespace
+#endif // !OPENSSL_NO_NEXTPROTONEG
 
 namespace {
 int communicate(
@@ -2308,8 +2315,10 @@ int communicate(
         goto fin;
       }
     }
+#ifndef OPENSSL_NO_NEXTPROTONEG
     SSL_CTX_set_next_proto_select_cb(ssl_ctx, client_select_next_proto_cb,
                                      nullptr);
+#endif // !OPENSSL_NO_NEXTPROTONEG
 
 #if OPENSSL_VERSION_NUMBER >= 0x10002000L
     auto proto_list = util::get_default_alpn();
